@@ -117,7 +117,7 @@ class MainActivity : AppCompatActivity() {
                 
                 imageReader?.setOnImageAvailableListener({ reader ->
                     if (!isStreaming) return@setOnImageAvailableListener
-                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                    val image = reader.acquireNextImage() ?: return@setOnImageAvailableListener
 
                     try {
                         val planes = image.planes
@@ -150,10 +150,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }, backgroundHandler)
 
+                val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR or DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC
                 virtualDisplay = mediaProjection?.createVirtualDisplay(
                     "ScreenCapture",
                     width, height, density,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    flags,
                     imageReader?.surface, null, null
                 )
 
