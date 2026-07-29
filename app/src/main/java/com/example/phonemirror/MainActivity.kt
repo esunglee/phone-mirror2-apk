@@ -58,7 +58,6 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_CODE_SCREEN_CAPTURE && resultCode == RESULT_OK && data != null) {
             
-            // 1. 포그라운드 서비스 먼저 시작
             val serviceIntent = Intent(this, ScreenCaptureService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
@@ -66,7 +65,6 @@ class MainActivity : AppCompatActivity() {
                 startService(serviceIntent)
             }
 
-            // 2. MediaProjection 객체 생성
             mediaProjection = projectionManager.getMediaProjection(resultCode, data)
             isStreaming = true
             connectAndStart()
@@ -81,9 +79,14 @@ class MainActivity : AppCompatActivity() {
                 dos = DataOutputStream(socket.getOutputStream())
 
                 val metrics = DisplayMetrics()
-                windowManager.defaultDisplay.getMetrics(metrics)
-                val width = metrics.widthPixels / 2
-                val height = metrics.heightPixels / 2
+                windowManager.defaultDisplay.getRealMetrics(metrics)
+                
+                // 가로/세로 해상도를 짝수로 보정
+                var width = metrics.widthPixels / 2
+                var height = metrics.heightPixels / 2
+                if (width % 2 != 0) width -= 1
+                if (height % 2 != 0) height -= 1
+                
                 val density = metrics.densityDpi
 
                 imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
@@ -109,7 +112,7 @@ class MainActivity : AppCompatActivity() {
 
                         val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
                         val stream = ByteArrayOutputStream()
-                        cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
+                        cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
                         val byteArray = stream.toByteArray()
 
                         thread {
