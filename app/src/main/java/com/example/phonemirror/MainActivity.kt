@@ -10,6 +10,8 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
@@ -29,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var dos: DataOutputStream? = null
 
     private val REQUEST_CODE_SCREEN_CAPTURE = 1001
 
@@ -42,7 +45,6 @@ class MainActivity : AppCompatActivity() {
 
         button.setOnClickListener {
             if (!isStreaming) {
-                // 화면 캡처 권한 요청 팝업 띄우기
                 startActivityForResult(
                     projectionManager.createScreenCaptureIntent(),
                     REQUEST_CODE_SCREEN_CAPTURE
@@ -56,34 +58,31 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQUEST_CODE_SCREEN_CAPTURE && resultCode == RESULT_OK && data != null) {
             mediaProjection = projectionManager.getMediaProjection(resultCode, data)
             isStreaming = true
-            startStreaming()
+            connectAndStart()
         }
     }
 
-    private fun startStreaming() {
+    private fun connectAndStart() {
         thread {
             try {
                 val socket = Socket()
                 socket.connect(InetSocketAddress(PC_IP, PC_PORT), 5000)
-                val dos = DataOutputStream(socket.getOutputStream())
+                dos = DataOutputStream(socket.getOutputStream())
 
                 val metrics = DisplayMetrics()
                 windowManager.defaultDisplay.getMetrics(metrics)
-                val width = metrics.widthPixels / 2  // 대역폭을 위해 해상도 1/2로 조절
+                val width = metrics.widthPixels / 2
                 val height = metrics.heightPixels / 2
                 val density = metrics.densityDpi
 
                 imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-                virtualDisplay = mediaProjection?.createVirtualDisplay(
-                    "ScreenCapture",
-                    width, height, density,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    imageReader?.surface, null, null
-                )
+                
+                // 새로운 프레임이 도착할 때마다 이벤트 수신
+                imageReader?.setOnImageAvailableListener({ reader ->
+                    if (!isStreaming) return@setOnImageAvailableListener
+                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
 
-                while (isStreaming) {
-                    val image = imageReader?.acquireLatestImage()
-                    if (image != null) {
+                    try {
                         val planes = image.planes
                         val buffer = planes[0].buffer
                         val pixelStride = planes[0].pixelStride
@@ -98,19 +97,33 @@ class MainActivity : AppCompatActivity() {
                         bitmap.copyPixelsFromBuffer(buffer)
                         image.close()
 
-                        // 해상도 맞춤 크롭
                         val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
-
                         val stream = ByteArrayOutputStream()
                         cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
                         val byteArray = stream.toByteArray()
 
-                        dos.writeInt(byteArray.size)
-                        dos.write(byteArray)
-                        dos.flush()
+                        thread {
+                            try {
+                                dos?.writeInt(byteArray.size)
+                                dos?.write(byteArray)
+                                dos?.flush()
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        image.close()
                     }
-                    Thread.sleep(50) // 초당 약 20프레임 전송
-                }
+                }, Handler(Looper.getMainLooper()))
+
+                virtualDisplay = mediaProjection?.createVirtualDisplay(
+                    "ScreenCapture",
+                    width, height, density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    imageReader?.surface, null, null
+                )
+
             } catch (e: Exception) {
                 e.printStackTrace()
                 isStreaming = false
