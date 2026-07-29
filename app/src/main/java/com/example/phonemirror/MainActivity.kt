@@ -1,7 +1,9 @@
 package com.example.phonemirror
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -16,6 +18,8 @@ import android.os.HandlerThread
 import android.util.DisplayMetrics
 import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.net.InetSocketAddress
@@ -38,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private var backgroundHandler: Handler? = null
 
     private val REQUEST_CODE_SCREEN_CAPTURE = 1001
+    private val REQUEST_CODE_NOTIFICATION = 1002
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,6 +51,13 @@ class MainActivity : AppCompatActivity() {
         setContentView(button)
 
         projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+
+        // 안드로이드 13 이상 필수 알림 권한 미리 요청 (강제 종료 방지)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_NOTIFICATION)
+            }
+        }
 
         button.setOnClickListener {
             if (!isStreaming) {
@@ -61,6 +73,7 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_CODE_SCREEN_CAPTURE && resultCode == RESULT_OK && data != null) {
             
+            // 1. 포그라운드 서비스 시작
             val serviceIntent = Intent(this, ScreenCaptureService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
@@ -68,13 +81,20 @@ class MainActivity : AppCompatActivity() {
                 startService(serviceIntent)
             }
 
-            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-            isStreaming = true
+            // 2. 서비스 실행 직후 약 300ms 후 MediaProjection 생성 (검은 화면 차단)
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+                    isStreaming = true
 
-            backgroundThread = HandlerThread("ImageReaderBackground").apply { start() }
-            backgroundHandler = Handler(backgroundThread!!.looper)
+                    backgroundThread = HandlerThread("ImageReaderBackground").apply { start() }
+                    backgroundHandler = Handler(backgroundThread!!.looper)
 
-            connectAndStart()
+                    connectAndStart()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }, 300)
         }
     }
 
@@ -119,7 +139,7 @@ class MainActivity : AppCompatActivity() {
                         val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
 
                         val stream = ByteArrayOutputStream()
-                        cleanBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                        cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
                         val byteArray = stream.toByteArray()
 
                         dos?.writeInt(byteArray.size)
