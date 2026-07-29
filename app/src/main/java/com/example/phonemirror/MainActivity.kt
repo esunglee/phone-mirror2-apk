@@ -1,45 +1,151 @@
 package com.example.phonemirror
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.Service
+import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.IBinder
-import androidx.core.app.NotificationCompat
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.DisplayMetrics
+import android.widget.Button
+import androidx.appcompat.app.AppCompatActivity
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
+import kotlin.concurrent.thread
 
-class ScreenCaptureService : Service() {
+class MainActivity : AppCompatActivity() {
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private val PC_IP = "127.0.0.1"
+    private val PC_PORT = 9999
+    private var isStreaming = false
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        createNotificationChannel()
-        val notification: Notification = NotificationCompat.Builder(this, "CHANNEL_MIRROR")
-            .setContentTitle("화면 미러링 중")
-            .setContentText("PC로 화면을 송출하고 있습니다.")
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .build()
+    private lateinit var projectionManager: MediaProjectionManager
+    private var mediaProjection: MediaProjection? = null
+    private var virtualDisplay: VirtualDisplay? = null
+    private var imageReader: ImageReader? = null
+    private var dos: DataOutputStream? = null
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } else {
-            startForeground(1, notification)
+    private val REQUEST_CODE_SCREEN_CAPTURE = 1001
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val button = Button(this).apply { text = "진짜 화면 송출 시작" }
+        setContentView(button)
+
+        projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+
+        button.setOnClickListener {
+            if (!isStreaming) {
+                startActivityForResult(
+                    projectionManager.createScreenCaptureIntent(),
+                    REQUEST_CODE_SCREEN_CAPTURE
+                )
+            }
         }
-
-        return START_STICKY
     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "CHANNEL_MIRROR",
-                "Screen Mirroring Channel",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_SCREEN_CAPTURE && resultCode == RESULT_OK && data != null) {
+            
+            // 1. 포그라운드 서비스 먼저 시작
+            val serviceIntent = Intent(this, ScreenCaptureService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+
+            // 2. MediaProjection 객체 생성
+            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+            isStreaming = true
+            connectAndStart()
         }
+    }
+
+    private fun connectAndStart() {
+        thread {
+            try {
+                val socket = Socket()
+                socket.connect(InetSocketAddress(PC_IP, PC_PORT), 5000)
+                dos = DataOutputStream(socket.getOutputStream())
+
+                val metrics = DisplayMetrics()
+                windowManager.defaultDisplay.getMetrics(metrics)
+                val width = metrics.widthPixels / 2
+                val height = metrics.heightPixels / 2
+                val density = metrics.densityDpi
+
+                imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+                
+                imageReader?.setOnImageAvailableListener({ reader ->
+                    if (!isStreaming) return@setOnImageAvailableListener
+                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+
+                    try {
+                        val planes = image.planes
+                        val buffer = planes[0].buffer
+                        val pixelStride = planes[0].pixelStride
+                        val rowStride = planes[0].rowStride
+                        val rowPadding = rowStride - pixelStride * width
+
+                        val bitmap = Bitmap.createBitmap(
+                            width + rowPadding / pixelStride,
+                            height,
+                            Bitmap.Config.ARGB_8888
+                        )
+                        bitmap.copyPixelsFromBuffer(buffer)
+                        image.close()
+
+                        val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
+                        val stream = ByteArrayOutputStream()
+                        cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
+                        val byteArray = stream.toByteArray()
+
+                        thread {
+                            try {
+                                dos?.writeInt(byteArray.size)
+                                dos?.write(byteArray)
+                                dos?.flush()
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        image.close()
+                    }
+                }, Handler(Looper.getMainLooper()))
+
+                virtualDisplay = mediaProjection?.createVirtualDisplay(
+                    "ScreenCapture",
+                    width, height, density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    imageReader?.surface, null, null
+                )
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                isStreaming = false
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isStreaming = false
+        stopService(Intent(this, ScreenCaptureService::class.java))
+        virtualDisplay?.release()
+        mediaProjection?.stop()
     }
 }
