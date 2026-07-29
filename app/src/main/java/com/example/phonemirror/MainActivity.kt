@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
@@ -52,7 +53,6 @@ class MainActivity : AppCompatActivity() {
 
         projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
-        // 안드로이드 13 이상 필수 알림 권한 미리 요청 (강제 종료 방지)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_NOTIFICATION)
@@ -73,7 +73,6 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_CODE_SCREEN_CAPTURE && resultCode == RESULT_OK && data != null) {
             
-            // 1. 포그라운드 서비스 시작
             val serviceIntent = Intent(this, ScreenCaptureService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
@@ -81,97 +80,7 @@ class MainActivity : AppCompatActivity() {
                 startService(serviceIntent)
             }
 
-            // 2. 서비스 실행 직후 약 300ms 후 MediaProjection 생성 (검은 화면 차단)
             Handler(Looper.getMainLooper()).postDelayed({
                 try {
                     mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-                    isStreaming = true
-
-                    backgroundThread = HandlerThread("ImageReaderBackground").apply { start() }
-                    backgroundHandler = Handler(backgroundThread!!.looper)
-
-                    connectAndStart()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }, 300)
-        }
-    }
-
-    private fun connectAndStart() {
-        thread {
-            try {
-                val socket = Socket()
-                socket.connect(InetSocketAddress(PC_IP, PC_PORT), 5000)
-                dos = DataOutputStream(socket.getOutputStream())
-
-                val metrics = DisplayMetrics()
-                windowManager.defaultDisplay.getRealMetrics(metrics)
-                
-                var width = metrics.widthPixels / 2
-                var height = metrics.heightPixels / 2
-                if (width % 2 != 0) width -= 1
-                if (height % 2 != 0) height -= 1
-                
-                val density = metrics.densityDpi
-
-                imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
-                
-                imageReader?.setOnImageAvailableListener({ reader ->
-                    if (!isStreaming) return@setOnImageAvailableListener
-                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-
-                    try {
-                        val planes = image.planes
-                        val buffer = planes[0].buffer
-                        val pixelStride = planes[0].pixelStride
-                        val rowStride = planes[0].rowStride
-                        val rowPadding = rowStride - pixelStride * width
-
-                        val bitmap = Bitmap.createBitmap(
-                            width + rowPadding / pixelStride,
-                            height,
-                            Bitmap.Config.ARGB_8888
-                        )
-                        bitmap.copyPixelsFromBuffer(buffer)
-                        image.close()
-
-                        val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
-
-                        val stream = ByteArrayOutputStream()
-                        cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
-                        val byteArray = stream.toByteArray()
-
-                        dos?.writeInt(byteArray.size)
-                        dos?.write(byteArray)
-                        dos?.flush()
-
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        image.close()
-                    }
-                }, backgroundHandler)
-
-                virtualDisplay = mediaProjection?.createVirtualDisplay(
-                    "ScreenCapture",
-                    width, height, density,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    imageReader?.surface, null, null
-                )
-
-            } catch (e: Exception) {
-                e.printStackTrace()
-                isStreaming = false
-            }
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        isStreaming = false
-        stopService(Intent(this, ScreenCaptureService::class.java))
-        virtualDisplay?.release()
-        mediaProjection?.stop()
-        backgroundThread?.quitSafely()
-    }
-}
+                    isStreaming = 
