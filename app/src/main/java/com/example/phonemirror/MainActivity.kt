@@ -12,7 +12,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.util.DisplayMetrics
 import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
@@ -33,6 +33,9 @@ class MainActivity : AppCompatActivity() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var dos: DataOutputStream? = null
+
+    private var backgroundThread: HandlerThread? = null
+    private var backgroundHandler: Handler? = null
 
     private val REQUEST_CODE_SCREEN_CAPTURE = 1001
 
@@ -67,6 +70,11 @@ class MainActivity : AppCompatActivity() {
 
             mediaProjection = projectionManager.getMediaProjection(resultCode, data)
             isStreaming = true
+
+            // 백그라운드 전용 스레드 가동
+            backgroundThread = HandlerThread("ImageReaderBackground").apply { start() }
+            backgroundHandler = Handler(backgroundThread!!.looper)
+
             connectAndStart()
         }
     }
@@ -81,7 +89,6 @@ class MainActivity : AppCompatActivity() {
                 val metrics = DisplayMetrics()
                 windowManager.defaultDisplay.getRealMetrics(metrics)
                 
-                // 가로/세로 해상도를 짝수로 보정
                 var width = metrics.widthPixels / 2
                 var height = metrics.heightPixels / 2
                 if (width % 2 != 0) width -= 1
@@ -89,7 +96,7 @@ class MainActivity : AppCompatActivity() {
                 
                 val density = metrics.densityDpi
 
-                imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+                imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
                 
                 imageReader?.setOnImageAvailableListener({ reader ->
                     if (!isStreaming) return@setOnImageAvailableListener
@@ -115,20 +122,15 @@ class MainActivity : AppCompatActivity() {
                         cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
                         val byteArray = stream.toByteArray()
 
-                        thread {
-                            try {
-                                dos?.writeInt(byteArray.size)
-                                dos?.write(byteArray)
-                                dos?.flush()
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        }
+                        dos?.writeInt(byteArray.size)
+                        dos?.write(byteArray)
+                        dos?.flush()
+
                     } catch (e: Exception) {
                         e.printStackTrace()
                         image.close()
                     }
-                }, Handler(Looper.getMainLooper()))
+                }, backgroundHandler)
 
                 virtualDisplay = mediaProjection?.createVirtualDisplay(
                     "ScreenCapture",
@@ -150,5 +152,6 @@ class MainActivity : AppCompatActivity() {
         stopService(Intent(this, ScreenCaptureService::class.java))
         virtualDisplay?.release()
         mediaProjection?.stop()
+        backgroundThread?.quitSafely()
     }
 }
