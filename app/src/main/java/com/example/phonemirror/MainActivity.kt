@@ -114,16 +114,12 @@ class MainActivity : AppCompatActivity() {
                             Bitmap.Config.ARGB_8888
                         )
                         bitmap.copyPixelsFromBuffer(buffer)
-                        
-                        // 🌟 핵심 해결 포인트: 투명 채널을 불투명(Alpha=255)으로 고정하여 JPEG 검은색 변환 차단!
-                        bitmap.setHasAlpha(false)
                         image.close()
 
                         val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
-                        cleanBitmap.setHasAlpha(false)
 
                         val stream = ByteArrayOutputStream()
-                        cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
+                        cleanBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
                         val byteArray = stream.toByteArray()
 
                         dos?.writeInt(byteArray.size)
