@@ -80,7 +80,96 @@ class MainActivity : AppCompatActivity() {
                 startService(serviceIntent)
             }
 
-            Handler(Looper.getMainLooper()).postDelayed({
+            Handler(Looper.getMainLooper()).postDelayed(Runnable {
                 try {
                     mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-                    isStreaming = 
+                    isStreaming = true
+
+                    backgroundThread = HandlerThread("ImageReaderBackground").apply { start() }
+                    backgroundHandler = Handler(backgroundThread!!.looper)
+
+                    connectAndStart()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }, 300)
+        }
+    }
+
+    private fun connectAndStart() {
+        thread {
+            try {
+                val socket = Socket()
+                socket.connect(InetSocketAddress(PC_IP, PC_PORT), 5000)
+                dos = DataOutputStream(socket.getOutputStream())
+
+                val metrics = DisplayMetrics()
+                windowManager.defaultDisplay.getRealMetrics(metrics)
+                
+                var width = metrics.widthPixels / 2
+                var height = metrics.heightPixels / 2
+                if (width % 2 != 0) width -= 1
+                if (height % 2 != 0) height -= 1
+                
+                val density = metrics.densityDpi
+
+                imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
+                
+                imageReader?.setOnImageAvailableListener({ reader ->
+                    if (!isStreaming) return@setOnImageAvailableListener
+                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+
+                    try {
+                        val planes = image.planes
+                        val buffer = planes[0].buffer
+                        val pixelStride = planes[0].pixelStride
+                        val rowStride = planes[0].rowStride
+                        val rowPadding = rowStride - pixelStride * width
+
+                        val bitmap = Bitmap.createBitmap(
+                            width + rowPadding / pixelStride,
+                            height,
+                            Bitmap.Config.ARGB_8888
+                        )
+                        bitmap.copyPixelsFromBuffer(buffer)
+                        image.close()
+
+                        val cleanBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
+
+                        val stream = ByteArrayOutputStream()
+                        cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
+                        val byteArray = stream.toByteArray()
+
+                        dos?.writeInt(byteArray.size)
+                        dos?.write(byteArray)
+                        dos?.flush()
+
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        image.close()
+                    }
+                }, backgroundHandler)
+
+                virtualDisplay = mediaProjection?.createVirtualDisplay(
+                    "ScreenCapture",
+                    width, height, density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    imageReader?.surface, null, null
+                )
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                isStreaming = false
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isStreaming = false
+        stopService(Intent(this, ScreenCaptureService::class.java))
+        virtualDisplay?.release()
+        mediaProjection?.stop()
+        backgroundThread?.quitSafely()
+    }
+}
